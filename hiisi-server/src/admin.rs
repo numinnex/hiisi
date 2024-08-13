@@ -38,7 +38,7 @@ fn on_recv<T>(io: &mut IO<T>, sock: Rc<Socket>, buf: &[u8], n: usize) {
     };
 
     let n = resp.len();
-    io.send(sock, resp, n, on_send);
+    io.send(sock, resp.into(), n, on_send);
 }
 
 fn on_send<T>(io: &mut IO<T>, sock: Rc<Socket>, _n: usize) {

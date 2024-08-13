@@ -1,6 +1,5 @@
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use std::collections::{HashMap, VecDeque};
-use std::mem::MaybeUninit;
 use std::os::fd::AsRawFd;
 use std::ptr;
 use std::rc::Rc;
@@ -40,7 +39,7 @@ impl<C> IO<C> {
     fn flush_submissions(&mut self) {
         log::debug!("Flushing submissions");
         for event in self.ring.completion() {
-            let key = event.user_data() as usize;
+            let key = event.user_data();
             log::debug!("Event: {:?}", key);
             let c = self.submissions.remove(&key).unwrap();
             c.prepare();
@@ -76,20 +75,19 @@ impl<C> IO<C> {
         let mut addr_len = server_addr.len();
         let addr_storage = server_addr.as_storage();
         let mut addr = unsafe { *(ptr::addr_of!(addr_storage).cast::<libc::sockaddr>()) };
-        let key = self.get_key(); 
-        let e = io_uring::opcode::Accept::new(
-            io_uring::types::Fd(fd),
-            &mut addr,
-            &mut addr_len 
-        ).build().user_data(key);
+        let key = self.get_key();
+        let e = io_uring::opcode::Accept::new(io_uring::types::Fd(fd), &mut addr, &mut addr_len)
+            .build()
+            .user_data(key);
         {
             let mut sq = self.ring.submission();
             match &c {
                 Completion::Accept { .. } => unsafe {
-                sq.push(&e).expect("Failed to add entry to submission queue, the queue is full.");
+                    sq.push(&e)
+                        .expect("Failed to add entry to submission queue, the queue is full.");
                 },
                 _ => {
-                todo!();
+                    todo!();
                 }
             }
         }
@@ -104,29 +102,64 @@ impl<C> IO<C> {
 
     pub fn recv(&mut self, sock: Rc<socket2::Socket>, cb: RecvCallback<C>) {
         log::debug!("Receiving on sockfd {:?}", sock);
-        let c = Completion::Recv { sock, cb };
-        let key = self.get_key();
-        match &c {
-            Completion::Recv { sock, .. } => unsafe {
-                self.poller.add(sock, Event::readable(key)).unwrap();
-            },
+        let buf = BytesMut::with_capacity(4096);
+        let sock_fd = sock.as_raw_fd();
+        let buf_len = buf.capacity();
+        let mut c = Completion::Recv { sock, buf, cb };
+        let mut_ptr = match &mut c {
+            Completion::Recv { buf, .. } => buf.as_mut_ptr(),
             _ => {
-                todo!();
+                unreachable!();
+            }
+        };
+        let key = self.get_key();
+        let e = io_uring::opcode::Recv::new(io_uring::types::Fd(sock_fd), mut_ptr, buf_len as u32)
+            .build()
+            .user_data(key);
+        {
+            let mut sq = self.ring.submission();
+            match &c {
+                Completion::Recv { .. } => unsafe {
+                    sq.push(&e).expect("Failed to add entry to sq")
+                },
+                _ => {
+                    todo!();
+                }
             }
         }
         self.enqueue(key, c);
     }
 
-    pub fn send(&mut self, sock: Rc<socket2::Socket>, buf: Bytes, n: usize, cb: SendCallback<C>) {
+    pub fn send(
+        &mut self,
+        sock: Rc<socket2::Socket>,
+        buf: BytesMut,
+        n: usize,
+        cb: SendCallback<C>,
+    ) {
         log::debug!("Sending on sockfd {:?}", sock);
+        let fd = sock.as_raw_fd();
+        let len = buf.capacity();
         let c = Completion::Send { sock, buf, n, cb };
         let key = self.get_key();
-        match &c {
-            Completion::Send { sock, .. } => unsafe {
-                self.poller.add(sock, Event::writable(key)).unwrap();
-            },
+        let ptr = match &c {
+            Completion::Send { buf, .. } => buf.as_ptr(),
             _ => {
-                todo!();
+                unreachable!();
+            }
+        };
+        let entry = io_uring::opcode::Send::new(io_uring::types::Fd(fd), ptr, len as u32)
+            .build()
+            .user_data(key);
+        {
+            let mut sq = self.ring.submission();
+            match &c {
+                Completion::Send { sock, .. } => unsafe {
+                    sq.push(&entry).expect("Failed to push op to que");
+                },
+                _ => {
+                    todo!();
+                }
             }
         }
         self.enqueue(key, c)
@@ -152,11 +185,12 @@ pub enum Completion<C> {
     Close,
     Recv {
         sock: Rc<socket2::Socket>,
+        buf: BytesMut,
         cb: RecvCallback<C>,
     },
     Send {
         sock: Rc<socket2::Socket>,
-        buf: Bytes,
+        buf: BytesMut,
         n: usize,
         cb: SendCallback<C>,
     },
@@ -198,7 +232,7 @@ impl<C> Completion<C> {
             Completion::Close => {
                 todo!();
             }
-            Completion::Recv { sock, cb } => {
+            Completion::Recv { sock, buf, cb } => {
                 let mut buf = BytesMut::with_capacity(4096);
                 let uninit = buf.spare_capacity_mut();
                 let n = sock.recv(uninit).unwrap();

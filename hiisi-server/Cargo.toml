@@ -23,6 +23,7 @@ env_logger = "0.11.5"
 http = "1.1.0"
 http-body-util = "0.1"
 httparse = "1.9.4"
+futures = "0.3.30"
 libsql-ffi = { git = "https://github.com/tursodatabase/libsql" }
 log = "0.4.22"
 libc = "0.2.155"

@@ -1,3 +1,4 @@
+/*
 #[cfg(not(feature = "simulation"))]
 mod generic;
 
@@ -9,5 +10,7 @@ mod simulation;
 
 #[cfg(feature = "simulation")]
 pub use simulation::IO;
+*/
 
+pub use linux::IO;
 mod linux;
