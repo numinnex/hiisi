@@ -1,6 +1,6 @@
 use bytes::BytesMut;
 use std::collections::{HashMap, VecDeque};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::ptr;
 use std::rc::Rc;
 
@@ -32,6 +32,7 @@ impl<C> IO<C> {
     pub fn run_once(&mut self) {
         log::debug!("Running IO loop");
         self.ring.submit().unwrap();
+        //println!("Submitted");
         self.flush_submissions();
         self.flush_completions();
     }
@@ -40,9 +41,10 @@ impl<C> IO<C> {
         log::debug!("Flushing submissions");
         for event in self.ring.completion() {
             let key = event.user_data();
-            log::debug!("Event: {:?}", key);
-            let c = self.submissions.remove(&key).unwrap();
-            c.prepare();
+            let result = event.result();
+            println!("Event: {:?}", key);
+            let mut c = self.submissions.remove(&key).unwrap();
+            c.prepare(result);
             self.completions.push_back(c);
         }
     }
@@ -52,6 +54,7 @@ impl<C> IO<C> {
         loop {
             let c = self.completions.pop_front();
             if let Some(c) = c {
+                println!("Completion: {:?}", c);
                 c.complete(self);
             } else {
                 break;
@@ -65,13 +68,15 @@ impl<C> IO<C> {
         server_addr: socket2::SockAddr,
         cb: AcceptCallback<C>,
     ) {
-        log::debug!("Accepting connection on sockfd {:?}", server_sock);
+        println!("Accepting connection on sockfd {:?}", server_sock);
         let fd = server_sock.as_raw_fd();
         let c = Completion::Accept {
+            fd: 0,
             server_sock,
             server_addr: server_addr.clone(),
             cb,
         };
+        println!("Post completion");
         let mut addr_len = server_addr.len();
         let addr_storage = server_addr.as_storage();
         let mut addr = unsafe { *(ptr::addr_of!(addr_storage).cast::<libc::sockaddr>()) };
@@ -79,13 +84,16 @@ impl<C> IO<C> {
         let e = io_uring::opcode::Accept::new(io_uring::types::Fd(fd), &mut addr, &mut addr_len)
             .build()
             .user_data(key);
+        println!("Post entry build");
         {
             let mut sq = self.ring.submission();
             match &c {
-                Completion::Accept { .. } => unsafe {
+                Completion::Accept { .. } => { unsafe {
                     sq.push(&e)
                         .expect("Failed to add entry to submission queue, the queue is full.");
-                },
+                };
+                println!("Pushed entry to submission queue");
+            },
                 _ => {
                     todo!();
                 }
@@ -178,6 +186,7 @@ impl<C> IO<C> {
 
 pub enum Completion<C> {
     Accept {
+        fd: i32,
         server_sock: Rc<socket2::Socket>,
         server_addr: socket2::SockAddr,
         cb: AcceptCallback<C>,
@@ -208,9 +217,11 @@ impl<C> std::fmt::Debug for Completion<C> {
 }
 
 impl<C> Completion<C> {
-    fn prepare(&self) {
+    fn prepare(&mut self, result: i32) {
         match self {
-            Completion::Accept { .. } => {}
+            Completion::Accept { fd, .. } => {
+                *fd = result;
+            },
             Completion::Close => {
                 todo!();
             }
@@ -222,20 +233,23 @@ impl<C> Completion<C> {
     fn complete(self, io: &mut IO<C>) {
         match self {
             Completion::Accept {
+                fd,
                 server_sock,
                 server_addr,
                 cb,
             } => {
-                let (sock, sock_addr) = server_sock.accept().unwrap();
+                println!("Before Accept socket connection in complete");
+                let sock = unsafe { socket2::Socket::from_raw_fd(fd) };
+                let sock_addr = sock.local_addr().unwrap();
+                //let (sock, sock_addr) = server_sock.accept().unwrap();
+                println!("Accepted socket: {:?}, addr: {:?}", sock, sock_addr);
                 cb(io, server_sock, server_addr, Rc::new(sock), sock_addr);
             }
             Completion::Close => {
                 todo!();
             }
-            Completion::Recv { sock, buf, cb } => {
-                let mut buf = BytesMut::with_capacity(4096);
-                let uninit = buf.spare_capacity_mut();
-                let n = sock.recv(uninit).unwrap();
+            Completion::Recv { sock, mut buf, cb } => {
+                let n = buf.len();
                 unsafe {
                     buf.set_len(n);
                 }

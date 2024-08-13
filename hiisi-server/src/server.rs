@@ -23,6 +23,7 @@ impl<T> Context<T> {
 }
 
 pub fn serve<T>(io: &mut IO<T>, sock: Rc<Socket>, addr: SockAddr) {
+    println!("Serving on {:?}", addr);
     io.accept(sock, addr, on_accept);
 }
 
@@ -33,7 +34,7 @@ fn on_accept<T>(
     conn_sock: Rc<Socket>,
     sock_addr: SockAddr,
 ) {
-    log::trace!("Server accepted connection from {:?}", sock_addr);
+    println!("Server accepted connection from {:?}", sock_addr);
     conn_sock.set_nodelay(true).unwrap();
     io.accept(server_sock, server_addr, on_accept);
     io.recv(conn_sock, on_recv);
@@ -47,8 +48,9 @@ fn execute_request<T>(io: &mut IO<T>, buf: &[u8]) -> Result<Bytes> {
 }
 
 fn on_recv<T>(io: &mut IO<T>, sock: Rc<Socket>, buf: &[u8], n: usize) {
+    println!("Reached there");
     if n == 0 {
-        log::trace!("Client closed connection");
+        println!("Client closed connection");
         io.close(sock);
         return;
     }
